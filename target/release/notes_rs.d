@@ -1,0 +1,1 @@
+/home/abo/Desktop/New\ Folder/tesst3/notes_rs/target/release/notes_rs: /home/abo/Desktop/New\ Folder/tesst3/notes_rs/src/app.rs /home/abo/Desktop/New\ Folder/tesst3/notes_rs/src/main.rs /home/abo/Desktop/New\ Folder/tesst3/notes_rs/src/storage.rs /home/abo/Desktop/New\ Folder/tesst3/notes_rs/src/ui.rs
