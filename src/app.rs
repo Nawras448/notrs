@@ -5,6 +5,7 @@ pub enum Screen {
     List,
     Editor(Option<Note>),
     ConfirmDelete(String),
+    Settings,
 }
 
 pub struct App {
@@ -20,11 +21,17 @@ pub struct App {
     pub cursor_col: usize,
     pub title_cursor: usize,
     pub scroll_offset: usize,
+    pub settings_input: Vec<char>,
+    pub settings_cursor: usize,
+    pub settings_error: Option<String>,
+    pub error_message: Option<String>,
+    pub status_message: Option<String>,
     pub should_quit: bool,
 }
 
 impl App {
     pub fn new() -> Self {
+        storage::ensure_configured_path();
         let notes = storage::load_notes();
         let filtered_notes = notes.clone();
         Self {
@@ -40,6 +47,11 @@ impl App {
             cursor_col: 0,
             title_cursor: 0,
             scroll_offset: 0,
+            settings_input: Vec::new(),
+            settings_cursor: 0,
+            settings_error: None,
+            error_message: None,
+            status_message: None,
             should_quit: false,
         }
     }
@@ -65,6 +77,8 @@ impl App {
     }
 
     pub fn start_new_note(&mut self) {
+        self.error_message = None;
+        self.status_message = None;
         self.editor_title.clear();
         self.editor_lines = vec![Vec::new()];
         self.cursor_line = 0;
@@ -76,6 +90,8 @@ impl App {
     }
 
     pub fn start_edit(&mut self, note: &Note) {
+        self.error_message = None;
+        self.status_message = None;
         self.editor_title = note.title.chars().collect();
         self.editor_lines = note
             .content
@@ -107,17 +123,24 @@ impl App {
             .join("\n");
         match &self.screen {
             Screen::Editor(Some(note)) => {
-                storage::update_note(&note.id, &title, &content);
+                storage::update_note(&note.id, &title, &content)
             }
-            _ => {
-                storage::add_note(&title, &content);
-            }
+            _ => storage::add_note(&title, &content),
         }
-        self.refresh();
-        self.screen = Screen::List;
+        .map_err(|e| format!("Could not save note: {e}"))
+        .map(|_| {
+            self.error_message = None;
+            self.status_message = Some("Note saved.".to_string());
+            self.refresh();
+            self.screen = Screen::List;
+        })
+        .unwrap_or_else(|msg| {
+            self.error_message = Some(msg);
+        });
     }
 
     pub fn start_delete(&mut self) {
+        self.status_message = None;
         if let Some(note) = self.selected_note().cloned() {
             self.screen = Screen::ConfirmDelete(note.title.clone());
         }
@@ -126,11 +149,94 @@ impl App {
     pub fn confirm_delete(&mut self) {
         if let Screen::ConfirmDelete(title) = &self.screen {
             if let Some(note) = self.notes.iter().find(|n| n.title == *title) {
-                storage::delete_note(&note.id);
+                if let Err(e) = storage::delete_note(&note.id) {
+                    self.error_message = Some(format!("Could not delete note: {e}"));
+                }
             }
         }
         self.refresh();
         self.screen = Screen::List;
+    }
+
+    // --- Settings ---
+
+    pub fn start_settings(&mut self) {
+        self.error_message = None;
+        self.status_message = None;
+        self.settings_input = storage::display_notes_path().chars().collect();
+        self.settings_cursor = self.settings_input.len();
+        self.settings_error = None;
+        self.screen = Screen::Settings;
+    }
+
+    pub fn settings_move_left(&mut self) {
+        if self.settings_cursor > 0 {
+            self.settings_cursor -= 1;
+        }
+    }
+
+    pub fn settings_move_right(&mut self) {
+        if self.settings_cursor < self.settings_input.len() {
+            self.settings_cursor += 1;
+        }
+    }
+
+    pub fn settings_home(&mut self) {
+        self.settings_cursor = 0;
+    }
+
+    pub fn settings_end(&mut self) {
+        self.settings_cursor = self.settings_input.len();
+    }
+
+    pub fn settings_insert_char(&mut self, c: char) {
+        self.settings_input.insert(self.settings_cursor, c);
+        self.settings_cursor += 1;
+    }
+
+    pub fn settings_backspace(&mut self) {
+        if self.settings_cursor > 0 {
+            self.settings_cursor -= 1;
+            self.settings_input.remove(self.settings_cursor);
+        }
+    }
+
+    pub fn settings_delete(&mut self) {
+        if self.settings_cursor < self.settings_input.len() {
+            self.settings_input.remove(self.settings_cursor);
+        }
+    }
+
+    pub fn confirm_settings(&mut self) {
+        let raw: String = self.settings_input.iter().collect();
+        let trimmed = raw.trim();
+        let new_path = if trimmed.is_empty() {
+            None
+        } else {
+            let normalized = storage::normalize_notes_path(trimmed);
+            if !normalized.is_absolute() {
+                self.settings_error = Some(
+                    "Path must be absolute (e.g. /home/you/notes.json)".to_string(),
+                );
+                return;
+            }
+            Some(normalized)
+        };
+        match storage::set_notes_path(new_path) {
+            Ok(effective) => {
+                self.settings_error = None;
+                self.error_message = None;
+                self.status_message = Some(format!(
+                    "Notes file: {}",
+                    storage::display_path(&effective)
+                ));
+                self.refresh();
+                self.screen = Screen::List;
+            }
+            Err(e) => {
+                self.settings_error = Some(format!("Could not save settings: {e}"));
+            }
+        }
     }
 
     // --- Cursor movement ---

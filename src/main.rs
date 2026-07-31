@@ -27,6 +27,7 @@ fn handle_list_key(key: KeyEvent, app: &mut App) {
             'c' | 'q' => app.should_quit = true,
             'n' => app.start_new_note(),
             'd' => app.start_delete(),
+            's' => app.start_settings(),
             _ => {}
         },
         KeyCode::Char(c) => match c {
@@ -192,8 +193,8 @@ fn handle_editor_mouse(event: MouseEvent, app: &mut App, terminal_width: u16, te
     let row = event.row;
 
     // Check if click is in title area (inside border)
-    if row >= title_area.y + 1 && row < title_area.y + title_area.height - 1
-        && col >= title_area.x + 1 && col < title_area.x + title_area.width - 1
+    if row > title_area.y && row < title_area.y + title_area.height - 1
+        && col > title_area.x && col < title_area.x + title_area.width - 1
     {
         app.editor_focus_title = true;
         let title_col = (col - title_area.x - 1) as usize;
@@ -202,8 +203,8 @@ fn handle_editor_mouse(event: MouseEvent, app: &mut App, terminal_width: u16, te
     }
 
     // Check if click is in content area (inside border)
-    if row >= content_area.y + 1 && row < content_area.y + content_area.height - 1
-        && col >= content_area.x + 1 && col < content_area.x + content_area.width - 1
+    if row > content_area.y && row < content_area.y + content_area.height - 1
+        && col > content_area.x && col < content_area.x + content_area.width - 1
     {
         app.editor_focus_title = false;
         let content_line = (row - content_area.y - 1) as usize;
@@ -211,6 +212,24 @@ fn handle_editor_mouse(event: MouseEvent, app: &mut App, terminal_width: u16, te
         app.cursor_line = (app.scroll_offset + content_line).min(app.editor_lines.len().saturating_sub(1));
         let line_len = app.editor_lines[app.cursor_line].len();
         app.cursor_col = content_col.min(line_len);
+    }
+}
+
+fn handle_settings_key(key: KeyEvent, app: &mut App) {
+    match key.code {
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.confirm_settings();
+        }
+        KeyCode::Enter => app.confirm_settings(),
+        KeyCode::Esc => app.screen = Screen::List,
+        KeyCode::Left => app.settings_move_left(),
+        KeyCode::Right => app.settings_move_right(),
+        KeyCode::Home => app.settings_home(),
+        KeyCode::End => app.settings_end(),
+        KeyCode::Backspace => app.settings_backspace(),
+        KeyCode::Delete => app.settings_delete(),
+        KeyCode::Char(c) => app.settings_insert_char(c),
+        _ => {}
     }
 }
 
@@ -229,6 +248,7 @@ fn handle_key(key: KeyEvent, app: &mut App) {
         Screen::List => handle_list_key(key, app),
         Screen::Editor(_) => handle_editor_key(key, app),
         Screen::ConfirmDelete(_) => handle_confirm_key(key, app),
+        Screen::Settings => handle_settings_key(key, app),
     }
 }
 

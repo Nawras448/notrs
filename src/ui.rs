@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wr
 use ratatui::Frame;
 
 use crate::app::{App, Screen};
+use crate::storage;
 
 const SURFACE: Color = Color::Rgb(36, 37, 58);
 const HIGHLIGHT: Color = Color::Rgb(59, 66, 97);
@@ -43,12 +44,14 @@ fn render_list(frame: &mut Frame, app: &App) {
         Constraint::Length(3),
         Constraint::Min(1),
         Constraint::Length(1),
+        Constraint::Length(1),
     ]);
     let rows = layout.split(area);
     let header_area = rows[0];
     let search_area = rows[1];
     let list_area = rows[2];
-    let footer_area = rows[3];
+    let message_area = rows[3];
+    let footer_area = rows[4];
 
     let header = Paragraph::new("Notes")
         .style(Style::new().fg(TEXT).bg(Color::Rgb(36, 47, 56)))
@@ -120,9 +123,20 @@ fn render_list(frame: &mut Frame, app: &App) {
         Span::styled(" [n] New ", Style::new().fg(ACCENT)),
         Span::styled(" [Enter] Edit ", Style::new().fg(SUBTEXT)),
         Span::styled(" [d] Delete ", Style::new().fg(ERROR)),
+        Span::styled(" [Ctrl+S] Settings ", Style::new().fg(ACCENT)),
     ]))
     .style(Style::new().bg(Color::Rgb(36, 47, 56)));
     frame.render_widget(footer, footer_area);
+
+    if let Some((text, color)) = match (&app.error_message, &app.status_message) {
+        (Some(e), _) => Some((e.clone(), ERROR)),
+        (None, Some(s)) => Some((s.clone(), SUBTEXT)),
+        _ => None,
+    } {
+        let message = Paragraph::new(text)
+            .style(Style::new().fg(color).bg(Color::Rgb(36, 47, 56)));
+        frame.render_widget(message, message_area);
+    }
 }
 
 fn render_editor(frame: &mut Frame, app: &mut App) {
@@ -310,6 +324,98 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
     frame.render_widget(footer, footer_area);
 }
 
+fn render_settings(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    let layout = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ]);
+    let rows = layout.split(area);
+    let header_area = rows[0];
+    let path_area = rows[1];
+    let hint_area = rows[2];
+    let footer_area = rows[4];
+
+    let header = Paragraph::new("Settings")
+        .style(Style::new().fg(TEXT).bg(Color::Rgb(36, 47, 56)))
+        .bold()
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::new().fg(Color::Rgb(73, 82, 89))),
+        );
+    frame.render_widget(header, header_area);
+
+    let path_text = if app.settings_input.is_empty() {
+        Text::from(Line::from(vec![
+            Span::raw("(current folder) notes.json"),
+            Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)),
+        ]))
+    } else {
+        let before: String = app.settings_input[..app.settings_cursor].iter().collect();
+        let at = app.settings_input.get(app.settings_cursor);
+        let after: String = app
+            .settings_input
+            .get(app.settings_cursor + 1..)
+            .unwrap_or(&[])
+            .iter()
+            .collect();
+        let mut spans = vec![Span::raw(before)];
+        match at {
+            Some(c) => {
+                spans.push(Span::styled(c.to_string(), Style::new().bg(TEXT).fg(SURFACE)));
+            }
+            None => {
+                spans.push(Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)));
+            }
+        }
+        spans.push(Span::raw(after));
+        Text::from(Line::from(spans))
+    };
+    let path_widget = Paragraph::new(path_text)
+        .style(Style::new().fg(TEXT).bg(SURFACE))
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title(" Notes file ")
+                .border_style(Style::new().fg(ACCENT)),
+        );
+    frame.render_widget(path_widget, path_area);
+
+    let current = storage::display_notes_path();
+    let hint_lines = vec![
+        Line::from(vec![Span::styled(format!(" Current: {current}"), Style::new().fg(SUBTEXT))]),
+        if let Some(err) = &app.settings_error {
+            Line::from(vec![Span::styled(format!(" {err}"), Style::new().fg(ERROR))])
+        } else {
+            Line::from(vec![Span::styled(
+                " Full file path (e.g. ~/notes.json). A folder gets notes.json added inside.",
+                Style::new().fg(SUBTEXT),
+            )])
+        },
+    ];
+    let hint = Paragraph::new(Text::from(hint_lines)).style(Style::new().bg(SURFACE));
+    frame.render_widget(hint, hint_area);
+
+    let cursor_x = path_area.x + 1 + app.settings_cursor as u16;
+    let cursor_y = path_area.y + 1;
+    if cursor_x < path_area.x + path_area.width - 1 {
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
+
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" [Ctrl+S] Save ", Style::new().fg(ACCENT)),
+        Span::styled(" [Enter] Save ", Style::new().fg(SUBTEXT)),
+        Span::styled(" [Esc] Cancel ", Style::new().fg(SUBTEXT)),
+    ]))
+    .style(Style::new().bg(Color::Rgb(36, 47, 56)));
+    frame.render_widget(footer, footer_area);
+}
+
 fn render_confirm(frame: &mut Frame, app: &App) {
     render_list(frame, app);
 
@@ -345,5 +451,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Screen::List => render_list(frame, app),
         Screen::Editor(_) => render_editor(frame, app),
         Screen::ConfirmDelete(_) => render_confirm(frame, app),
+        Screen::Settings => render_settings(frame, app),
     }
 }
