@@ -1,11 +1,12 @@
 use chrono::DateTime;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, Screen};
+use crate::md;
 use crate::storage;
 
 const SURFACE: Color = Color::Rgb(36, 37, 58);
@@ -14,6 +15,50 @@ const TEXT: Color = Color::Rgb(192, 202, 245);
 const SUBTEXT: Color = Color::Rgb(86, 95, 137);
 const ACCENT: Color = Color::Rgb(1, 120, 212);
 const ERROR: Color = Color::Rgb(247, 118, 142);
+const H2: Color = Color::Rgb(101, 197, 120);
+const LIST: Color = Color::Rgb(169, 130, 255);
+
+fn styled_line(chars: &[char], cursor: Option<usize>, style: Style) -> Line<'static> {
+    if let Some(cur) = cursor {
+        if cur >= chars.len() {
+            let mut spans: Vec<Span> = chars
+                .iter()
+                .map(|&c| Span::styled(c.to_string(), style))
+                .collect();
+            spans.push(Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)));
+            Line::from(spans)
+        } else {
+            let before: String = chars[..cur].iter().collect();
+            let at = chars[cur];
+            let after: String = chars[cur + 1..].iter().collect();
+            Line::from(vec![
+                Span::styled(before, style),
+                Span::styled(at.to_string(), Style::new().bg(TEXT).fg(SURFACE)),
+                Span::styled(after, style),
+            ])
+        }
+    } else {
+        Line::from(
+            chars
+                .iter()
+                .map(|&c| Span::styled(c.to_string(), style))
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+fn line_style(line: &[char]) -> Style {
+    match md::classify(line) {
+        md::BlockKind::Heading(1) => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        md::BlockKind::Heading(_) => Style::new().fg(H2).add_modifier(Modifier::BOLD),
+        md::BlockKind::Quote => Style::new().fg(SUBTEXT).add_modifier(Modifier::ITALIC),
+        md::BlockKind::Divider => Style::new().fg(SUBTEXT),
+        md::BlockKind::Bullet | md::BlockKind::Checkbox(_) | md::BlockKind::Ordered => {
+            Style::new().fg(LIST)
+        }
+        _ => Style::new().fg(TEXT),
+    }
+}
 
 fn format_date(rfc: &str) -> String {
     if let Ok(dt) = DateTime::parse_from_rfc3339(rfc) {
@@ -123,6 +168,7 @@ fn render_list(frame: &mut Frame, app: &App) {
         Span::styled(" [n] New ", Style::new().fg(ACCENT)),
         Span::styled(" [Enter] Edit ", Style::new().fg(SUBTEXT)),
         Span::styled(" [d] Delete ", Style::new().fg(ERROR)),
+        Span::styled(" [Ctrl+R] Sort ", Style::new().fg(ACCENT)),
         Span::styled(" [Ctrl+S] Settings ", Style::new().fg(ACCENT)),
     ]))
     .style(Style::new().bg(Color::Rgb(36, 47, 56)));
@@ -170,12 +216,12 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
 
     // --- Title ---
 
-    let title_style = if app.editor_focus_title {
+    let title_style = if app.editor.focus_title {
         Style::new().fg(TEXT).bg(SURFACE)
     } else {
         Style::new().fg(SUBTEXT).bg(SURFACE)
     };
-    let title_border = if app.editor_focus_title {
+    let title_border = if app.editor.focus_title {
         Block::bordered()
             .border_type(BorderType::Rounded)
             .title(" Title ")
@@ -186,8 +232,11 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
             .title(" Title ")
             .border_style(Style::new().fg(Color::Rgb(59, 66, 97)))
     };
-    let title_text = if app.editor_title.is_empty() {
-        if app.editor_focus_title {
+    let mut visual_cursor_x: Option<usize> = None;
+    let title_inner_width = title_area.width.saturating_sub(2) as usize;
+    let title_text = if app.editor.title.is_empty() {
+        if app.editor.focus_title {
+            visual_cursor_x = Some("Note title...".chars().count());
             Text::from(Line::from(vec![
                 Span::raw("Note title..."),
                 Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)),
@@ -195,23 +244,18 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
         } else {
             Text::from("Note title...")
         }
-    } else if app.editor_focus_title {
-        let before: String = app.editor_title[..app.title_cursor].iter().collect();
-        let at = app.editor_title.get(app.title_cursor);
-        let after: String = app.editor_title.get(app.title_cursor + 1..).unwrap_or(&[]).iter().collect();
-        let mut spans = vec![Span::raw(before)];
-        match at {
-            Some(c) => {
-                spans.push(Span::styled(c.to_string(), Style::new().bg(TEXT).fg(SURFACE)));
-            }
-            None => {
-                spans.push(Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)));
-            }
-        }
-        spans.push(Span::raw(after));
-        Text::from(Line::from(spans))
     } else {
-        Text::from(app.editor_title.iter().collect::<String>())
+        let cursor = if app.editor.focus_title {
+            Some(app.editor.title_cursor)
+        } else {
+            None
+        };
+        let visual = md::line_to_visual(&app.editor.title, cursor, None, title_inner_width);
+        if app.editor.focus_title {
+            visual_cursor_x = visual.cursor;
+        }
+        let fg = if app.editor.focus_title { TEXT } else { SUBTEXT };
+        Text::from(styled_line(&visual.chars, visual.cursor, Style::new().fg(fg)))
     };
     let title_widget = Paragraph::new(title_text)
         .style(title_style)
@@ -220,7 +264,7 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
 
     // --- Content ---
 
-    let content_border = if !app.editor_focus_title {
+    let content_border = if !app.editor.focus_title {
         Block::bordered()
             .border_type(BorderType::Rounded)
             .title(" Content ")
@@ -231,37 +275,66 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
             .title(" Content ")
             .border_style(Style::new().fg(Color::Rgb(59, 66, 97)))
     };
-    let content_style = if !app.editor_focus_title {
+    let content_style = if !app.editor.focus_title {
         Style::new().fg(TEXT).bg(SURFACE)
     } else {
         Style::new().fg(SUBTEXT).bg(SURFACE)
     };
-    let content_text = if !app.editor_focus_title {
-        let mut lines: Vec<Line> = Vec::with_capacity(app.editor_lines.len());
-        for (i, line_chars) in app.editor_lines.iter().enumerate() {
-            if i == app.cursor_line {
-                let before: String = line_chars[..app.cursor_col].iter().collect();
-                let at = line_chars.get(app.cursor_col);
-                let after: String = line_chars.get(app.cursor_col + 1..).unwrap_or(&[]).iter().collect();
-                let mut spans = vec![Span::raw(before)];
-                match at {
-                    Some(c) => {
-                        spans.push(Span::styled(c.to_string(), Style::new().bg(TEXT).fg(SURFACE)));
-                    }
-                    None => {
-                        spans.push(Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)));
-                    }
+    let content_inner_width = content_area.width.saturating_sub(2) as usize;
+    let content_text = if !app.editor.focus_title {
+        let mut out_lines: Vec<Line> = Vec::with_capacity(app.editor.lines.len());
+        let mut i = 0;
+        while i < app.editor.lines.len() {
+            if md::is_table_row(&app.editor.lines[i]) {
+                let mut end = i;
+                while end + 1 < app.editor.lines.len()
+                    && md::is_table_row(&app.editor.lines[end + 1])
+                {
+                    end += 1;
                 }
-                spans.push(Span::raw(after));
-                lines.push(Line::from(spans));
-            } else {
-                lines.push(Line::from(Span::raw(line_chars.iter().collect::<String>())));
+                let block: Vec<&[char]> = app.editor.lines[i..=end]
+                    .iter()
+                    .map(|v| v.as_slice())
+                    .collect();
+                let widths = md::table_col_widths(&block);
+                for (k, rl) in app.editor.lines[i..=end].iter().enumerate() {
+                    let is_cur = i + k == app.editor.cursor_line;
+                    let cursor = if is_cur {
+                        Some(app.editor.cursor_col)
+                    } else {
+                        None
+                    };
+                    let visual = md::table_visual(rl, &widths, cursor);
+                    if is_cur {
+                        visual_cursor_x = visual.cursor;
+                    }
+                    let style = if md::is_separator_row(rl) {
+                        Style::new().fg(SUBTEXT)
+                    } else {
+                        Style::new().fg(TEXT)
+                    };
+                    out_lines.push(styled_line(&visual.chars, visual.cursor, style));
+                }
+                i = end + 1;
+                continue;
             }
+            let is_cur = i == app.editor.cursor_line;
+            let cursor = if is_cur {
+                Some(app.editor.cursor_col)
+            } else {
+                None
+            };
+            let visual = md::line_to_visual(&app.editor.lines[i], cursor, None, content_inner_width);
+            if is_cur {
+                visual_cursor_x = visual.cursor;
+            }
+            out_lines.push(styled_line(&visual.chars, visual.cursor, line_style(&app.editor.lines[i])));
+            i += 1;
         }
-        Text::from(lines)
+        Text::from(out_lines)
     } else {
         Text::from(
-            app.editor_lines
+            app.editor.lines
                 .iter()
                 .map(|line| line.iter().collect::<String>())
                 .collect::<Vec<_>>()
@@ -277,22 +350,22 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
     // --- Cursor & scroll ---
 
     let visible_lines = (content_area.height.saturating_sub(2)) as usize;
-    if app.cursor_line < app.scroll_offset {
-        app.scroll_offset = app.cursor_line;
+    if app.editor.cursor_line < app.editor.scroll_offset {
+        app.editor.scroll_offset = app.editor.cursor_line;
     }
-    if visible_lines > 0 && app.cursor_line >= app.scroll_offset + visible_lines {
-        app.scroll_offset = app.cursor_line.saturating_add(1).saturating_sub(visible_lines);
+    if visible_lines > 0 && app.editor.cursor_line >= app.editor.scroll_offset + visible_lines {
+        app.editor.scroll_offset = app.editor.cursor_line.saturating_add(1).saturating_sub(visible_lines);
     }
 
-    if app.editor_focus_title {
-        let cursor_x = title_area.x + 1 + app.title_cursor as u16;
+    if app.editor.focus_title {
+        let cursor_x = title_area.x + 1 + visual_cursor_x.unwrap_or(app.editor.title_cursor) as u16;
         let cursor_y = title_area.y + 1;
         if cursor_x < title_area.x + title_area.width - 1 {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     } else {
-        let cursor_screen_line = app.cursor_line.saturating_sub(app.scroll_offset);
-        let cursor_x = content_area.x + 1 + app.cursor_col as u16;
+        let cursor_screen_line = app.editor.cursor_line.saturating_sub(app.editor.scroll_offset);
+        let cursor_x = content_area.x + 1 + visual_cursor_x.unwrap_or(app.editor.cursor_col) as u16;
         let cursor_y = content_area.y + 1 + cursor_screen_line as u16;
         if cursor_screen_line < visible_lines
             && cursor_x < content_area.x + content_area.width - 1
@@ -308,6 +381,11 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
             Span::styled(" [Ctrl+S] Save ", Style::new().fg(ACCENT)),
             Span::styled(" [Esc] Cancel ", Style::new().fg(SUBTEXT)),
             Span::styled(" [Ctrl+D] Delete ", Style::new().fg(ERROR)),
+            Span::styled(" [Ctrl+1-6] Heading ", Style::new().fg(ACCENT)),
+            Span::styled(" [Ctrl+U] Bullet ", Style::new().fg(ACCENT)),
+            Span::styled(" [Ctrl+O] Numbered ", Style::new().fg(ACCENT)),
+            Span::styled(" [Ctrl+T] Table ", Style::new().fg(ACCENT)),
+            Span::styled(" [Alt+↑/↓] Move ", Style::new().fg(SUBTEXT)),
             Span::styled(" [Tab] Switch ", Style::new().fg(SUBTEXT)),
             Span::styled(" [Mouse] Click ", Style::new().fg(SUBTEXT)),
         ]))
@@ -316,6 +394,10 @@ fn render_editor(frame: &mut Frame, app: &mut App) {
         Paragraph::new(Line::from(vec![
             Span::styled(" [Ctrl+S] Save ", Style::new().fg(ACCENT)),
             Span::styled(" [Esc] Cancel ", Style::new().fg(SUBTEXT)),
+            Span::styled(" [Ctrl+1-6] Heading ", Style::new().fg(ACCENT)),
+            Span::styled(" [Ctrl+U] Bullet ", Style::new().fg(ACCENT)),
+            Span::styled(" [Ctrl+O] Numbered ", Style::new().fg(ACCENT)),
+            Span::styled(" [Ctrl+T] Table ", Style::new().fg(ACCENT)),
             Span::styled(" [Tab] Switch ", Style::new().fg(SUBTEXT)),
             Span::styled(" [Mouse] Click ", Style::new().fg(SUBTEXT)),
         ]))
@@ -350,17 +432,17 @@ fn render_settings(frame: &mut Frame, app: &mut App) {
         );
     frame.render_widget(header, header_area);
 
-    let path_text = if app.settings_input.is_empty() {
+    let path_text = if app.settings.input.is_empty() {
         Text::from(Line::from(vec![
             Span::raw("(current folder) notes.json"),
             Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)),
         ]))
     } else {
-        let before: String = app.settings_input[..app.settings_cursor].iter().collect();
-        let at = app.settings_input.get(app.settings_cursor);
+        let before: String = app.settings.input[..app.settings.cursor].iter().collect();
+        let at = app.settings.input.get(app.settings.cursor);
         let after: String = app
-            .settings_input
-            .get(app.settings_cursor + 1..)
+            .settings.input
+            .get(app.settings.cursor + 1..)
             .unwrap_or(&[])
             .iter()
             .collect();
@@ -389,7 +471,7 @@ fn render_settings(frame: &mut Frame, app: &mut App) {
     let current = storage::display_notes_path();
     let hint_lines = vec![
         Line::from(vec![Span::styled(format!(" Current: {current}"), Style::new().fg(SUBTEXT))]),
-        if let Some(err) = &app.settings_error {
+        if let Some(err) = &app.settings.error {
             Line::from(vec![Span::styled(format!(" {err}"), Style::new().fg(ERROR))])
         } else {
             Line::from(vec![Span::styled(
@@ -401,7 +483,7 @@ fn render_settings(frame: &mut Frame, app: &mut App) {
     let hint = Paragraph::new(Text::from(hint_lines)).style(Style::new().bg(SURFACE));
     frame.render_widget(hint, hint_area);
 
-    let cursor_x = path_area.x + 1 + app.settings_cursor as u16;
+    let cursor_x = path_area.x + 1 + app.settings.cursor as u16;
     let cursor_y = path_area.y + 1;
     if cursor_x < path_area.x + path_area.width - 1 {
         frame.set_cursor_position((cursor_x, cursor_y));

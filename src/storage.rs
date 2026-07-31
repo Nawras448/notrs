@@ -206,12 +206,28 @@ pub fn delete_note(id: &str) -> io::Result<()> {
     save_notes(&notes)
 }
 
+pub fn search_notes(query: &str) -> Vec<Note> {
+    if query.is_empty() {
+        return load_notes();
+    }
+    let q = query.to_lowercase();
+    let notes = load_notes();
+    notes
+        .into_iter()
+        .filter(|n| n.title.to_lowercase().contains(&q) || n.content.to_lowercase().contains(&q))
+        .collect()
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    pub(crate) fn lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn temp_data_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("notes_rs_{}_{}", std::process::id(), name))
@@ -242,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_crud() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         let (data, config) = setup();
         clear_all_notes();
 
@@ -264,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_search() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         let (data, config) = setup();
         clear_all_notes();
 
@@ -285,7 +301,7 @@ mod tests {
 
     #[test]
     fn test_config_roundtrip() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         let (data, config) = setup();
 
         let custom = "/tmp/my_notes.json";
@@ -343,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_migrate_notes() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
         let (data, config) = setup();
 
         let from = temp_data_file("from.json");
@@ -366,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_relocate_migrates_data() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = lock();
 
         let config_file = temp_data_file("reloc_cfg.json");
         let from = temp_data_file("from_reloc.json");
@@ -394,14 +410,3 @@ mod tests {
     }
 }
 
-pub fn search_notes(query: &str) -> Vec<Note> {
-    if query.is_empty() {
-        return load_notes();
-    }
-    let q = query.to_lowercase();
-    let notes = load_notes();
-    notes
-        .into_iter()
-        .filter(|n| n.title.to_lowercase().contains(&q) || n.content.to_lowercase().contains(&q))
-        .collect()
-}

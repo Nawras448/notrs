@@ -16,10 +16,12 @@ use ratatui::layout::{Constraint, Layout};
 use ratatui::Terminal;
 
 mod app;
+mod md;
 mod storage;
 mod ui;
 
 use app::{App, Screen};
+use md::visual_to_logical;
 
 fn handle_list_key(key: KeyEvent, app: &mut App) {
     match key.code {
@@ -28,6 +30,7 @@ fn handle_list_key(key: KeyEvent, app: &mut App) {
             'n' => app.start_new_note(),
             'd' => app.start_delete(),
             's' => app.start_settings(),
+            'r' => app.cycle_sort(),
             _ => {}
         },
         KeyCode::Char(c) => match c {
@@ -90,84 +93,110 @@ fn handle_editor_key(key: KeyEvent, app: &mut App) {
                     app.start_delete();
                 }
             }
+            '1' | '2' | '3' | '4' | '5' | '6' if !app.editor.focus_title => {
+                app.editor.set_heading(c.to_digit(10).unwrap_or(0) as u8);
+            }
+            '0' if !app.editor.focus_title => {
+                app.editor.set_heading(0);
+            }
+            'u' if !app.editor.focus_title => {
+                app.editor.toggle_bullet();
+            }
+            'o' if !app.editor.focus_title => {
+                app.editor.toggle_ordered();
+            }
+            't' if !app.editor.focus_title => {
+                app.editor.insert_table();
+            }
             _ => {}
         },
         KeyCode::Tab => {
-            app.editor_focus_title = !app.editor_focus_title;
+            if app.editor.focus_title || !app.editor.tab() {
+                app.editor.focus_title = !app.editor.focus_title;
+            }
+        }
+        KeyCode::BackTab => {
+            if !app.editor.focus_title {
+                app.editor.shift_tab();
+            }
         }
         KeyCode::Enter => {
-            if app.editor_focus_title {
-                app.editor_focus_title = false;
+            if app.editor.focus_title {
+                app.editor.focus_title = false;
             } else {
-                app.insert_newline();
+                app.editor.insert_newline_smart();
             }
         }
         KeyCode::Backspace => {
-            if app.editor_focus_title {
-                app.title_backspace();
+            if app.editor.focus_title {
+                app.editor.title_backspace();
             } else {
-                app.content_backspace();
+                app.editor.content_backspace();
             }
         }
         KeyCode::Delete => {
-            if app.editor_focus_title {
-                app.title_delete();
+            if app.editor.focus_title {
+                app.editor.title_delete();
             } else {
-                app.content_delete();
+                app.editor.content_delete();
             }
         }
         KeyCode::Left => {
-            if app.editor_focus_title {
-                app.title_move_left();
+            if app.editor.focus_title {
+                app.editor.title_move_left();
             } else {
-                app.move_cursor_left();
+                app.editor.move_cursor_left();
             }
         }
         KeyCode::Right => {
-            if app.editor_focus_title {
-                app.title_move_right();
+            if app.editor.focus_title {
+                app.editor.title_move_right();
             } else {
-                app.move_cursor_right();
+                app.editor.move_cursor_right();
             }
         }
         KeyCode::Up => {
-            if app.editor_focus_title {
+            if key.modifiers.contains(KeyModifiers::ALT) && !app.editor.focus_title {
+                app.editor.move_line_up();
+            } else if app.editor.focus_title {
                 // do nothing, already at the top field
-            } else if app.cursor_line == 0 {
-                app.editor_focus_title = true;
+            } else if app.editor.cursor_line == 0 {
+                app.editor.focus_title = true;
             } else {
-                app.move_cursor_up();
+                app.editor.move_cursor_up();
             }
         }
         KeyCode::Down => {
-            if app.editor_focus_title {
-                app.editor_focus_title = false;
+            if key.modifiers.contains(KeyModifiers::ALT) && !app.editor.focus_title {
+                app.editor.move_line_down();
+            } else if app.editor.focus_title {
+                app.editor.focus_title = false;
             } else {
-                app.move_cursor_down();
+                app.editor.move_cursor_down();
             }
         }
         KeyCode::Home => {
-            if app.editor_focus_title {
-                app.title_cursor = 0;
+            if app.editor.focus_title {
+                app.editor.title_cursor = 0;
             } else {
-                app.move_cursor_home();
+                app.editor.move_cursor_home();
             }
         }
         KeyCode::End => {
-            if app.editor_focus_title {
-                app.title_cursor = app.editor_title.len();
+            if app.editor.focus_title {
+                app.editor.title_cursor = app.editor.title.len();
             } else {
-                app.move_cursor_end();
+                app.editor.move_cursor_end();
             }
         }
         KeyCode::Esc => {
             app.screen = Screen::List;
         }
         KeyCode::Char(c) => {
-            if app.editor_focus_title {
-                app.title_insert_char(c);
+            if app.editor.focus_title {
+                app.editor.title_insert_char(c);
             } else {
-                app.insert_char(c);
+                app.editor.insert_char(c);
             }
         }
         _ => {}
@@ -196,9 +225,10 @@ fn handle_editor_mouse(event: MouseEvent, app: &mut App, terminal_width: u16, te
     if row > title_area.y && row < title_area.y + title_area.height - 1
         && col > title_area.x && col < title_area.x + title_area.width - 1
     {
-        app.editor_focus_title = true;
+        app.editor.focus_title = true;
         let title_col = (col - title_area.x - 1) as usize;
-        app.title_cursor = title_col.min(app.editor_title.len());
+        let title_inner = title_area.width.saturating_sub(2) as usize;
+        app.editor.title_cursor = visual_to_logical(&app.editor.title, title_col, None, title_inner);
         return;
     }
 
@@ -206,12 +236,18 @@ fn handle_editor_mouse(event: MouseEvent, app: &mut App, terminal_width: u16, te
     if row > content_area.y && row < content_area.y + content_area.height - 1
         && col > content_area.x && col < content_area.x + content_area.width - 1
     {
-        app.editor_focus_title = false;
+        app.editor.focus_title = false;
         let content_line = (row - content_area.y - 1) as usize;
         let content_col = (col - content_area.x - 1) as usize;
-        app.cursor_line = (app.scroll_offset + content_line).min(app.editor_lines.len().saturating_sub(1));
-        let line_len = app.editor_lines[app.cursor_line].len();
-        app.cursor_col = content_col.min(line_len);
+        app.editor.cursor_line = (app.editor.scroll_offset + content_line).min(app.editor.lines.len().saturating_sub(1));
+        let content_width = content_area.width.saturating_sub(2) as usize;
+        let widths = md::table_block_widths(&app.editor.lines, app.editor.cursor_line);
+        app.editor.cursor_col = visual_to_logical(
+            &app.editor.lines[app.editor.cursor_line],
+            content_col,
+            widths.as_deref(),
+            content_width,
+        );
     }
 }
 
@@ -222,13 +258,13 @@ fn handle_settings_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Enter => app.confirm_settings(),
         KeyCode::Esc => app.screen = Screen::List,
-        KeyCode::Left => app.settings_move_left(),
-        KeyCode::Right => app.settings_move_right(),
-        KeyCode::Home => app.settings_home(),
-        KeyCode::End => app.settings_end(),
-        KeyCode::Backspace => app.settings_backspace(),
-        KeyCode::Delete => app.settings_delete(),
-        KeyCode::Char(c) => app.settings_insert_char(c),
+        KeyCode::Left => app.settings.move_left(),
+        KeyCode::Right => app.settings.move_right(),
+        KeyCode::Home => app.settings.home(),
+        KeyCode::End => app.settings.end(),
+        KeyCode::Backspace => app.settings.backspace(),
+        KeyCode::Delete => app.settings.delete(),
+        KeyCode::Char(c) => app.settings.insert_char(c),
         _ => {}
     }
 }
@@ -305,5 +341,43 @@ fn main() {
     if let Err(e) = run() {
         let _ = restore_terminal();
         eprintln!("Error: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_file(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("notes_rs_main_{}_{}", std::process::id(), name))
+    }
+
+    fn setup() {
+        std::env::set_var("NOTRS_DATA_FILE", temp_file("data.json"));
+        std::env::set_var("NOTRS_CONFIG_FILE", temp_file("config.json"));
+        let _ = std::fs::remove_file(temp_file("data.json"));
+        let _ = std::fs::remove_file(temp_file("config.json"));
+    }
+
+    fn teardown() {
+        let _ = std::fs::remove_file(temp_file("data.json"));
+        let _ = std::fs::remove_file(temp_file("config.json"));
+        std::env::remove_var("NOTRS_DATA_FILE");
+        std::env::remove_var("NOTRS_CONFIG_FILE");
+    }
+
+    #[test]
+    fn test_ctrl_r_cycles_sort_from_list() {
+        let _guard = storage::tests::lock();
+        setup();
+
+        let mut app = App::new();
+        assert_eq!(app.sort_order, app::SortOrder::UpdatedDesc);
+        handle_list_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), &mut app);
+        assert_eq!(app.sort_order, app::SortOrder::UpdatedAsc);
+        assert!(app.status_message.is_some());
+
+        teardown();
     }
 }
