@@ -13,9 +13,13 @@ pub struct App {
     pub selected_index: usize,
     pub screen: Screen,
     pub search_query: String,
-    pub editor_title: String,
-    pub editor_content: String,
+    pub editor_title: Vec<char>,
+    pub editor_lines: Vec<Vec<char>>,
     pub editor_focus_title: bool,
+    pub cursor_line: usize,
+    pub cursor_col: usize,
+    pub title_cursor: usize,
+    pub scroll_offset: usize,
     pub should_quit: bool,
 }
 
@@ -29,9 +33,13 @@ impl App {
             selected_index: 0,
             screen: Screen::List,
             search_query: String::new(),
-            editor_title: String::new(),
-            editor_content: String::new(),
+            editor_title: Vec::new(),
+            editor_lines: vec![Vec::new()],
             editor_focus_title: true,
+            cursor_line: 0,
+            cursor_col: 0,
+            title_cursor: 0,
+            scroll_offset: 0,
             should_quit: false,
         }
     }
@@ -58,24 +66,45 @@ impl App {
 
     pub fn start_new_note(&mut self) {
         self.editor_title.clear();
-        self.editor_content.clear();
+        self.editor_lines = vec![Vec::new()];
+        self.cursor_line = 0;
+        self.cursor_col = 0;
+        self.title_cursor = 0;
+        self.scroll_offset = 0;
         self.editor_focus_title = true;
         self.screen = Screen::Editor(None);
     }
 
     pub fn start_edit(&mut self, note: &Note) {
-        self.editor_title = note.title.clone();
-        self.editor_content = note.content.clone();
+        self.editor_title = note.title.chars().collect();
+        self.editor_lines = note
+            .content
+            .split('\n')
+            .map(|s| s.chars().collect())
+            .collect();
+        if self.editor_lines.is_empty() {
+            self.editor_lines = vec![Vec::new()];
+        }
+        self.cursor_line = 0;
+        self.cursor_col = 0;
+        self.title_cursor = 0;
+        self.scroll_offset = 0;
         self.editor_focus_title = true;
         self.screen = Screen::Editor(Some(note.clone()));
     }
 
     pub fn save_note(&mut self) {
-        let title = self.editor_title.trim().to_string();
-        let content = self.editor_content.clone();
+        let title: String = self.editor_title.iter().collect();
+        let title = title.trim().to_string();
         if title.is_empty() {
             return;
         }
+        let content: String = self
+            .editor_lines
+            .iter()
+            .map(|line| line.iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
         match &self.screen {
             Screen::Editor(Some(note)) => {
                 storage::update_note(&note.id, &title, &content);
@@ -102,5 +131,124 @@ impl App {
         }
         self.refresh();
         self.screen = Screen::List;
+    }
+
+    // --- Cursor movement ---
+
+    pub fn move_cursor_up(&mut self) {
+        if self.cursor_line > 0 {
+            self.cursor_line -= 1;
+            let len = self.editor_lines[self.cursor_line].len();
+            if self.cursor_col > len {
+                self.cursor_col = len;
+            }
+        }
+    }
+
+    pub fn move_cursor_down(&mut self) {
+        if self.cursor_line + 1 < self.editor_lines.len() {
+            self.cursor_line += 1;
+            let len = self.editor_lines[self.cursor_line].len();
+            if self.cursor_col > len {
+                self.cursor_col = len;
+            }
+        }
+    }
+
+    pub fn move_cursor_left(&mut self) {
+        if self.cursor_col > 0 {
+            self.cursor_col -= 1;
+        } else if self.cursor_line > 0 {
+            self.cursor_line -= 1;
+            self.cursor_col = self.editor_lines[self.cursor_line].len();
+        }
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        let line_len = self.editor_lines[self.cursor_line].len();
+        if self.cursor_col < line_len {
+            self.cursor_col += 1;
+        } else if self.cursor_line + 1 < self.editor_lines.len() {
+            self.cursor_line += 1;
+            self.cursor_col = 0;
+        }
+    }
+
+    pub fn move_cursor_home(&mut self) {
+        self.cursor_col = 0;
+    }
+
+    pub fn move_cursor_end(&mut self) {
+        self.cursor_col = self.editor_lines[self.cursor_line].len();
+    }
+
+    // --- Title editing ---
+
+    pub fn title_move_left(&mut self) {
+        if self.title_cursor > 0 {
+            self.title_cursor -= 1;
+        }
+    }
+
+    pub fn title_move_right(&mut self) {
+        if self.title_cursor < self.editor_title.len() {
+            self.title_cursor += 1;
+        }
+    }
+
+    pub fn title_insert_char(&mut self, c: char) {
+        self.editor_title.insert(self.title_cursor, c);
+        self.title_cursor += 1;
+    }
+
+    pub fn title_backspace(&mut self) {
+        if self.title_cursor > 0 {
+            self.title_cursor -= 1;
+            self.editor_title.remove(self.title_cursor);
+        }
+    }
+
+    pub fn title_delete(&mut self) {
+        if self.title_cursor < self.editor_title.len() {
+            self.editor_title.remove(self.title_cursor);
+        }
+    }
+
+    // --- Content editing ---
+
+    pub fn insert_char(&mut self, c: char) {
+        self.editor_lines[self.cursor_line].insert(self.cursor_col, c);
+        self.cursor_col += 1;
+    }
+
+    pub fn content_backspace(&mut self) {
+        if self.cursor_col > 0 {
+            self.cursor_col -= 1;
+            self.editor_lines[self.cursor_line].remove(self.cursor_col);
+        } else if self.cursor_line > 0 {
+            let prev_len = self.editor_lines[self.cursor_line - 1].len();
+            let current = self.editor_lines.remove(self.cursor_line);
+            self.editor_lines[self.cursor_line - 1].extend(current);
+            self.cursor_line -= 1;
+            self.cursor_col = prev_len;
+        }
+    }
+
+    pub fn content_delete(&mut self) {
+        let line_len = self.editor_lines[self.cursor_line].len();
+        if self.cursor_col < line_len {
+            self.editor_lines[self.cursor_line].remove(self.cursor_col);
+        } else if self.cursor_line + 1 < self.editor_lines.len() {
+            let next = self.editor_lines.remove(self.cursor_line + 1);
+            self.editor_lines[self.cursor_line].extend(next);
+        }
+    }
+
+    pub fn insert_newline(&mut self) {
+        let current = &mut self.editor_lines[self.cursor_line];
+        let rest = current.split_off(self.cursor_col);
+        self.cursor_line += 1;
+        self.cursor_col = 0;
+        self.editor_lines.insert(self.cursor_line, rest);
     }
 }

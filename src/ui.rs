@@ -125,7 +125,7 @@ fn render_list(frame: &mut Frame, app: &App) {
     frame.render_widget(footer, footer_area);
 }
 
-fn render_editor(frame: &mut Frame, app: &App) {
+fn render_editor(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let layout = Layout::vertical([
         Constraint::Length(1),
@@ -154,6 +154,8 @@ fn render_editor(frame: &mut Frame, app: &App) {
         );
     frame.render_widget(header, header_area);
 
+    // --- Title ---
+
     let title_style = if app.editor_focus_title {
         Style::new().fg(TEXT).bg(SURFACE)
     } else {
@@ -170,15 +172,39 @@ fn render_editor(frame: &mut Frame, app: &App) {
             .title(" Title ")
             .border_style(Style::new().fg(Color::Rgb(59, 66, 97)))
     };
-    let title_display = if app.editor_title.is_empty() {
-        "Note title...".to_string()
+    let title_text = if app.editor_title.is_empty() {
+        if app.editor_focus_title {
+            Text::from(Line::from(vec![
+                Span::raw("Note title..."),
+                Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)),
+            ]))
+        } else {
+            Text::from("Note title...")
+        }
+    } else if app.editor_focus_title {
+        let before: String = app.editor_title[..app.title_cursor].iter().collect();
+        let at = app.editor_title.get(app.title_cursor);
+        let after: String = app.editor_title.get(app.title_cursor + 1..).unwrap_or(&[]).iter().collect();
+        let mut spans = vec![Span::raw(before)];
+        match at {
+            Some(c) => {
+                spans.push(Span::styled(c.to_string(), Style::new().bg(TEXT).fg(SURFACE)));
+            }
+            None => {
+                spans.push(Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)));
+            }
+        }
+        spans.push(Span::raw(after));
+        Text::from(Line::from(spans))
     } else {
-        app.editor_title.clone()
+        Text::from(app.editor_title.iter().collect::<String>())
     };
-    let title_widget = Paragraph::new(title_display)
+    let title_widget = Paragraph::new(title_text)
         .style(title_style)
         .block(title_border);
     frame.render_widget(title_widget, title_area);
+
+    // --- Content ---
 
     let content_border = if !app.editor_focus_title {
         Block::bordered()
@@ -196,25 +222,88 @@ fn render_editor(frame: &mut Frame, app: &App) {
     } else {
         Style::new().fg(SUBTEXT).bg(SURFACE)
     };
-    let content_widget = Paragraph::new(app.editor_content.as_str())
+    let content_text = if !app.editor_focus_title {
+        let mut lines: Vec<Line> = Vec::with_capacity(app.editor_lines.len());
+        for (i, line_chars) in app.editor_lines.iter().enumerate() {
+            if i == app.cursor_line {
+                let before: String = line_chars[..app.cursor_col].iter().collect();
+                let at = line_chars.get(app.cursor_col);
+                let after: String = line_chars.get(app.cursor_col + 1..).unwrap_or(&[]).iter().collect();
+                let mut spans = vec![Span::raw(before)];
+                match at {
+                    Some(c) => {
+                        spans.push(Span::styled(c.to_string(), Style::new().bg(TEXT).fg(SURFACE)));
+                    }
+                    None => {
+                        spans.push(Span::styled(" ", Style::new().bg(TEXT).fg(SURFACE)));
+                    }
+                }
+                spans.push(Span::raw(after));
+                lines.push(Line::from(spans));
+            } else {
+                lines.push(Line::from(Span::raw(line_chars.iter().collect::<String>())));
+            }
+        }
+        Text::from(lines)
+    } else {
+        Text::from(
+            app.editor_lines
+                .iter()
+                .map(|line| line.iter().collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
+    let content_widget = Paragraph::new(content_text)
         .style(content_style)
         .block(content_border)
         .wrap(Wrap { trim: false });
     frame.render_widget(content_widget, content_area);
+
+    // --- Cursor & scroll ---
+
+    let visible_lines = (content_area.height.saturating_sub(2)) as usize;
+    if app.cursor_line < app.scroll_offset {
+        app.scroll_offset = app.cursor_line;
+    }
+    if visible_lines > 0 && app.cursor_line >= app.scroll_offset + visible_lines {
+        app.scroll_offset = app.cursor_line.saturating_add(1).saturating_sub(visible_lines);
+    }
+
+    if app.editor_focus_title {
+        let cursor_x = title_area.x + 1 + app.title_cursor as u16;
+        let cursor_y = title_area.y + 1;
+        if cursor_x < title_area.x + title_area.width - 1 {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    } else {
+        let cursor_screen_line = app.cursor_line.saturating_sub(app.scroll_offset);
+        let cursor_x = content_area.x + 1 + app.cursor_col as u16;
+        let cursor_y = content_area.y + 1 + cursor_screen_line as u16;
+        if cursor_screen_line < visible_lines
+            && cursor_x < content_area.x + content_area.width - 1
+        {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+
+    // --- Footer ---
 
     let footer = if matches!(&app.screen, Screen::Editor(Some(_))) {
         Paragraph::new(Line::from(vec![
             Span::styled(" [Ctrl+S] Save ", Style::new().fg(ACCENT)),
             Span::styled(" [Esc] Cancel ", Style::new().fg(SUBTEXT)),
             Span::styled(" [Ctrl+D] Delete ", Style::new().fg(ERROR)),
-            Span::styled(" [Tab] Switch field ", Style::new().fg(SUBTEXT)),
+            Span::styled(" [Tab] Switch ", Style::new().fg(SUBTEXT)),
+            Span::styled(" [Mouse] Click ", Style::new().fg(SUBTEXT)),
         ]))
         .style(Style::new().bg(Color::Rgb(36, 47, 56)))
     } else {
         Paragraph::new(Line::from(vec![
             Span::styled(" [Ctrl+S] Save ", Style::new().fg(ACCENT)),
             Span::styled(" [Esc] Cancel ", Style::new().fg(SUBTEXT)),
-            Span::styled(" [Tab] Switch field ", Style::new().fg(SUBTEXT)),
+            Span::styled(" [Tab] Switch ", Style::new().fg(SUBTEXT)),
+            Span::styled(" [Mouse] Click ", Style::new().fg(SUBTEXT)),
         ]))
         .style(Style::new().bg(Color::Rgb(36, 47, 56)))
     };
@@ -251,7 +340,7 @@ fn render_confirm(frame: &mut Frame, app: &App) {
     frame.render_widget(dialog, dialog_area);
 }
 
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::List => render_list(frame, app),
         Screen::Editor(_) => render_editor(frame, app),

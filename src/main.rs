@@ -2,10 +2,17 @@ use std::io;
 use std::panic;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
+use crossterm::cursor::{self, SetCursorStyle};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Layout};
 use ratatui::Terminal;
 
 mod app;
@@ -91,14 +98,65 @@ fn handle_editor_key(key: KeyEvent, app: &mut App) {
             if app.editor_focus_title {
                 app.editor_focus_title = false;
             } else {
-                app.editor_content.push('\n');
+                app.insert_newline();
             }
         }
         KeyCode::Backspace => {
             if app.editor_focus_title {
-                app.editor_title.pop();
+                app.title_backspace();
             } else {
-                app.editor_content.pop();
+                app.content_backspace();
+            }
+        }
+        KeyCode::Delete => {
+            if app.editor_focus_title {
+                app.title_delete();
+            } else {
+                app.content_delete();
+            }
+        }
+        KeyCode::Left => {
+            if app.editor_focus_title {
+                app.title_move_left();
+            } else {
+                app.move_cursor_left();
+            }
+        }
+        KeyCode::Right => {
+            if app.editor_focus_title {
+                app.title_move_right();
+            } else {
+                app.move_cursor_right();
+            }
+        }
+        KeyCode::Up => {
+            if app.editor_focus_title {
+                // do nothing, already at the top field
+            } else if app.cursor_line == 0 {
+                app.editor_focus_title = true;
+            } else {
+                app.move_cursor_up();
+            }
+        }
+        KeyCode::Down => {
+            if app.editor_focus_title {
+                app.editor_focus_title = false;
+            } else {
+                app.move_cursor_down();
+            }
+        }
+        KeyCode::Home => {
+            if app.editor_focus_title {
+                app.title_cursor = 0;
+            } else {
+                app.move_cursor_home();
+            }
+        }
+        KeyCode::End => {
+            if app.editor_focus_title {
+                app.title_cursor = app.editor_title.len();
+            } else {
+                app.move_cursor_end();
             }
         }
         KeyCode::Esc => {
@@ -106,12 +164,53 @@ fn handle_editor_key(key: KeyEvent, app: &mut App) {
         }
         KeyCode::Char(c) => {
             if app.editor_focus_title {
-                app.editor_title.push(c);
+                app.title_insert_char(c);
             } else {
-                app.editor_content.push(c);
+                app.insert_char(c);
             }
         }
         _ => {}
+    }
+}
+
+fn handle_editor_mouse(event: MouseEvent, app: &mut App, terminal_width: u16, terminal_height: u16) {
+    if event.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+    let area = ratatui::layout::Rect::new(0, 0, terminal_width, terminal_height);
+    let layout = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ]);
+    let rows = layout.split(area);
+    let title_area = rows[1];
+    let content_area = rows[2];
+
+    let col = event.column;
+    let row = event.row;
+
+    // Check if click is in title area (inside border)
+    if row >= title_area.y + 1 && row < title_area.y + title_area.height - 1
+        && col >= title_area.x + 1 && col < title_area.x + title_area.width - 1
+    {
+        app.editor_focus_title = true;
+        let title_col = (col - title_area.x - 1) as usize;
+        app.title_cursor = title_col.min(app.editor_title.len());
+        return;
+    }
+
+    // Check if click is in content area (inside border)
+    if row >= content_area.y + 1 && row < content_area.y + content_area.height - 1
+        && col >= content_area.x + 1 && col < content_area.x + content_area.width - 1
+    {
+        app.editor_focus_title = false;
+        let content_line = (row - content_area.y - 1) as usize;
+        let content_col = (col - content_area.x - 1) as usize;
+        app.cursor_line = (app.scroll_offset + content_line).min(app.editor_lines.len().saturating_sub(1));
+        let line_len = app.editor_lines[app.cursor_line].len();
+        app.cursor_col = content_col.min(line_len);
     }
 }
 
@@ -136,13 +235,17 @@ fn handle_key(key: KeyEvent, app: &mut App) {
 fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(EnableMouseCapture)?;
+    io::stdout().execute(cursor::Show)?;
+    io::stdout().execute(SetCursorStyle::BlinkingBlock)?;
     let backend = CrosstermBackend::new(io::stdout());
     Terminal::new(backend)
 }
 
 fn restore_terminal() -> io::Result<()> {
-    disable_raw_mode()?;
+    io::stdout().execute(DisableMouseCapture)?;
     io::stdout().execute(LeaveAlternateScreen)?;
+    disable_raw_mode()?;
     Ok(())
 }
 
@@ -151,11 +254,19 @@ fn run() -> io::Result<()> {
     let mut app = App::new();
 
     while !app.should_quit {
-        terminal.draw(|f| ui::render(f, &app))?;
+        terminal.draw(|f| ui::render(f, &mut app))?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key(key, &mut app);
+            match event::read()? {
+                Event::Key(key) => handle_key(key, &mut app),
+                Event::Mouse(mouse) => {
+                    if matches!(app.screen, Screen::Editor(_)) {
+                        let size = terminal.size()?;
+                        let (width, height) = (size.width, size.height);
+                        handle_editor_mouse(mouse, &mut app, width, height);
+                    }
+                }
+                _ => {}
             }
         }
     }

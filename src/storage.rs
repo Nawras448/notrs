@@ -85,6 +85,9 @@ pub fn delete_note(id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn clear_all_notes() {
         for note in load_notes() {
@@ -94,6 +97,7 @@ mod tests {
 
     #[test]
     fn test_crud() {
+        let _guard = TEST_LOCK.lock().unwrap();
         clear_all_notes();
 
         let note = add_note("Test Title", "Test Content");
@@ -113,6 +117,7 @@ mod tests {
 
     #[test]
     fn test_search() {
+        let _guard = TEST_LOCK.lock().unwrap();
         clear_all_notes();
 
         add_note("Grocery List", "milk, eggs");
